@@ -1,129 +1,111 @@
-# redis-server /usr/local/etc/redis.conf
-# az webapp up --resource-group rg9335 --name fashionshop --sku F1 
 from flask import Flask, request, render_template
 import os
-import random
 import redis
 import socket
-import sys
 import logging
-from datetime import datetime
 
-# App Insights
-from opencensus.ext.azure.log_exporter import AzureLogHandler, AzureEventHandler
+# App Insights (OpenCensus)
+from opencensus.ext.azure.log_exporter import AzureEventHandler
 from opencensus.ext.azure import metrics_exporter
-from opencensus.stats import aggregation as aggregation_module
-from opencensus.stats import measure as measure_module
-from opencensus.stats import stats as stats_module
-from opencensus.stats import view as view_module
-from opencensus.tags import tag_map as tag_map_module
 from opencensus.ext.azure.trace_exporter import AzureExporter
 from opencensus.trace.samplers import ProbabilitySampler
 from opencensus.trace.tracer import Tracer
 from opencensus.ext.flask.flask_middleware import FlaskMiddleware
-from applicationinsights import TelemetryClient
 
-ConnectionString = 'InstrumentationKey=339ac93f-2eec-4039-91bb-4d29b7fc4036;IngestionEndpoint=https://eastus-8.in.applicationinsights.azure.com/;LiveEndpoint=https://eastus.livediagnostics.monitor.azure.com/;ApplicationId=9c61d2ac-21ba-436b-a6c7-856ec6017c42'
 
-# Logging
-logger = logging.getLogger(__name__)
-logger.addHandler(
-    AzureEventHandler(
-        connection_string=ConnectionString)
-)
+# -------------------------
+# App configuration
+# -------------------------
+app = Flask(__name__)
+app.config.from_pyfile('config_file.cfg')
+
+button1 = os.environ.get("VOTE1VALUE") or app.config['VOTE1VALUE']
+button2 = os.environ.get("VOTE2VALUE") or app.config['VOTE2VALUE']
+title = os.environ.get("TITLE") or app.config['TITLE']
+
+if app.config.get('SHOWHOST') == "true":
+    title = socket.gethostname()
+
+
+# -------------------------
+# Application Insights setup
+# -------------------------
+CONNECTION_STRING = "InstrumentationKey=339ac93f-2eec-4039-91bb-4d29b7fc4036;IngestionEndpoint=https://eastus-8.in.applicationinsights.azure.com/;LiveEndpoint=https://eastus.livediagnostics.monitor.azure.com/;ApplicationId=9c61d2ac-21ba-436b-a6c7-856ec6017c42"
+
+# Logging -> Events/Traces tables
+logger = logging.getLogger("azurevote")
 logger.setLevel(logging.INFO)
+logger.addHandler(AzureEventHandler(connection_string=CONNECTION_STRING))
 
-# Metrics
-exporter = metrics_exporter.new_metrics_exporter(
+# Metrics (standard metrics)
+metrics_exporter.new_metrics_exporter(
     enable_standard_metrics=True,
-    connection_string=ConnectionString)
+    connection_string=CONNECTION_STRING
+)
 
 # Tracing
 tracer = Tracer(
-    exporter=AzureExporter(
-        connection_string=ConnectionString),
-        sampler=ProbabilitySampler(1.0),
+    exporter=AzureExporter(connection_string=CONNECTION_STRING),
+    sampler=ProbabilitySampler(1.0),
 )
 
-app = Flask(__name__)
-
-# Requests
+# Requests telemetry (auto-collect HTTP requests)
 middleware = FlaskMiddleware(
     app,
-    exporter=AzureExporter(connection_string=ConnectionString),
-    sampler=ProbabilitySampler(rate=1.0),
+    exporter=AzureExporter(connection_string=CONNECTION_STRING),
+    sampler=ProbabilitySampler(1.0),
 )
 
-# Load configurations from environment or config file
-app.config.from_pyfile('config_file.cfg')
 
-if ("VOTE1VALUE" in os.environ and os.environ['VOTE1VALUE']):
-    button1 = os.environ['VOTE1VALUE']
-else:
-    button1 = app.config['VOTE1VALUE']
+# -------------------------
+# Redis (VMSS = local Redis)
+# -------------------------
+r = redis.Redis(host="localhost", port=6379)
 
-if ("VOTE2VALUE" in os.environ and os.environ['VOTE2VALUE']):
-    button2 = os.environ['VOTE2VALUE']
-else:
-    button2 = app.config['VOTE2VALUE']
+# Init Redis keys
+if not r.get(button1):
+    r.set(button1, 0)
+if not r.get(button2):
+    r.set(button2, 0)
 
-if ("TITLE" in os.environ and os.environ['TITLE']):
-    title = os.environ['TITLE']
-else:
-    title = app.config['TITLE']
-
-# Redis Connection
-r = redis.Redis()
-
-# Change title to host name to demo NLB
-if app.config['SHOWHOST'] == "true":
-    title = socket.gethostname()
-
-# Init Redis
-if not r.get(button1): r.set(button1,0)
-if not r.get(button2): r.set(button2,0)
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
-
     if request.method == 'GET':
-
-        # Get current values
         vote1 = r.get(button1).decode('utf-8')
-        tracer.span(name="Cats Vote")
         vote2 = r.get(button2).decode('utf-8')
-        tracer.span(name="Dogs Vote")
+        return render_template(
+            "index.html",
+            value1=int(vote1),
+            value2=int(vote2),
+            button1=button1,
+            button2=button2,
+            title=title
+        )
 
-        # Return index with values
-        return render_template("index.html", value1=int(vote1), value2=int(vote2), button1=button1, button2=button2, title=title)
+    # POST
+    if request.form['vote'] == 'reset':
+        r.set(button1, 0)
+        r.set(button2, 0)
+    else:
+        vote = request.form['vote']  # "Cats" or "Dogs"
+        r.incr(vote, 1)
 
-    elif request.method == 'POST':
+        # Custom event telemetry (visible in Logs -> traces table)
+        properties = {'custom_dimensions': {'vote': vote}}
+        logger.info(f"custom_event=vote_{vote.lower()}", extra=properties)
 
-        if request.form['vote'] == 'reset':
+    vote1 = r.get(button1).decode('utf-8')
+    vote2 = r.get(button2).decode('utf-8')
+    return render_template(
+        "index.html",
+        value1=int(vote1),
+        value2=int(vote2),
+        button1=button1,
+        button2=button2,
+        title=title
+    )
 
-            # Empty table and return results
-            r.set(button1,0)
-            r.set(button2,0)
-            vote1 = r.get(button1).decode('utf-8')
-            vote2 = r.get(button2).decode('utf-8')
-            return render_template("index.html", value1=int(vote1), value2=int(vote2), button1=button1, button2=button2, title=title)
-
-        else:
-            # Insert vote result into DB
-            vote = request.form['vote']
-            r.incr(vote,1)
-
-            # Get current values
-            vote1 = r.get(button1).decode('utf-8')
-            vote2 = r.get(button2).decode('utf-8')
-
-            properties = {'custom_dimensions': {vote: 1}}
-            logger.warning(vote, extra=properties)
-            # Return results
-            return render_template("index.html", value1=int(vote1), value2=int(vote2), button1=button1, button2=button2, title=title)
 
 if __name__ == "__main__":
-
-    #app.run() # local
-
-     app.run(host='0.0.0.0', threaded=True, debug=True) # remote
+    app.run(host="0.0.0.0", threaded=True, debug=True)
