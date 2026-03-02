@@ -30,7 +30,7 @@ if app.config.get('SHOWHOST') == "true":
 # -------------------------
 # Application Insights setup
 # -------------------------
-CONNECTION_STRING = "InstrumentationKey=339ac93f-2eec-4039-91bb-4d29b7fc4036;IngestionEndpoint=https://eastus-8.in.applicationinsights.azure.com/;LiveEndpoint=https://eastus.livediagnostics.monitor.azure.com/;ApplicationId=9c61d2ac-21ba-436b-a6c7-856ec6017c42"
+CONNECTION_STRING = "InstrumentationKey=7305ec93-6716-456c-b0ca-808cd675b725;IngestionEndpoint=https://eastus-8.in.applicationinsights.azure.com/;LiveEndpoint=https://eastus.livediagnostics.monitor.azure.com/;ApplicationId=5656cadd-9a9e-4179-82e3-7a16a87d92d8"
 
 # Logging -> Events/Traces tables
 logger = logging.getLogger("azurevote")
@@ -60,7 +60,7 @@ middleware = FlaskMiddleware(
 # -------------------------
 # Redis (VMSS = local Redis)
 # -------------------------
-r = redis.Redis(host="localhost", port=6379)
+r = redis.Redis()
 
 # Init Redis keys
 if not r.get(button1):
